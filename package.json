@@ -1,0 +1,9 @@
+{
+	"name": "jev-pi",
+	"private": true,
+	"type": "module",
+	"description": "Jev for pi: TypeSafe System One judgments in the agent loop (extension + skills + prompts)",
+	"scripts": {
+		"test": "tsx tests/test-extension.ts"
+	}
+}

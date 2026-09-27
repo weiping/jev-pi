@@ -1,0 +1,28 @@
+{
+  "description": "Jev engineering: dependency setup, permission gate, output ladder, conditional context, subagent routing",
+  "hooks": {
+    "SessionStart": [
+      {"hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh", "args": [], "timeout": 300,
+                  "statusMessage": "Jev: installing Python dependencies (first run only)"}]},
+      {"matcher": "compact",
+       "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh", "args": ["session_context"]}]}
+    ],
+    "UserPromptSubmit": [
+      {"hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh", "args": ["prompt_context"], "timeout": 15}]}
+    ],
+    "PreToolUse": [
+      {"matcher": "Bash",
+       "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh", "args": ["permission_gate"],
+                  "timeout": 20, "statusMessage": "Jev: checking command"}]},
+      {"matcher": "Agent",
+       "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh", "args": ["agent_router"],
+                  "timeout": 20, "statusMessage": "Jev: routing subagent"}]}
+    ],
+    "PostToolUse": [
+      {"matcher": "Bash",
+       "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh", "args": ["output_ladder"], "timeout": 20}]},
+      {"matcher": "Agent",
+       "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh", "args": ["agent_done"]}]}
+    ]
+  }
+}

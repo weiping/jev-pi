@@ -1,0 +1,7 @@
+.DS_Store
+node_modules/
+.pi/url-cache/
+__pycache__/
+*.pyc
+.claude/jev/state/
+.claude/jev/logs/

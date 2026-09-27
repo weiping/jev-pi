@@ -1,0 +1,10 @@
+{
+  "name": "jev",
+  "displayName": "Jev Engineering",
+  "version": "0.1.0",
+  "description": "Make Claude Code faster and cheaper with TypeSafe Jev decisions: permission gate, output visibility ladder, conditional instructions, subagent routing and dedupe, shared retrieval.",
+  "author": {"name": "weiping", "url": "https://github.com/weiping"},
+  "repository": "https://github.com/weiping/jev-claude-code",
+  "license": "MIT",
+  "keywords": ["jev", "typesafe", "hooks", "subagents", "cost"]
+}

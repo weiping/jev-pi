@@ -1,0 +1,85 @@
+{
+  "c0": {
+    "choice": "hide",
+    "confidence": 0.9,
+    "probabilities": {
+      "full": 0.05,
+      "short": 0.05,
+      "hide": 0.9
+    }
+  },
+  "c1": {
+    "choice": "hide",
+    "confidence": 0.9,
+    "probabilities": {
+      "full": 0.05,
+      "short": 0.05,
+      "hide": 0.9
+    }
+  },
+  "c2": {
+    "choice": "hide",
+    "confidence": 0.9,
+    "probabilities": {
+      "full": 0.05,
+      "short": 0.05,
+      "hide": 0.9
+    }
+  },
+  "c3": {
+    "choice": "full",
+    "confidence": 0.95,
+    "probabilities": {
+      "full": 0.95,
+      "short": 0.04,
+      "hide": 0.01
+    }
+  },
+  "c4": {
+    "choice": "hide",
+    "confidence": 0.9,
+    "probabilities": {
+      "full": 0.05,
+      "short": 0.05,
+      "hide": 0.9
+    }
+  },
+  "c5": {
+    "choice": "hide",
+    "confidence": 0.9,
+    "probabilities": {
+      "full": 0.05,
+      "short": 0.05,
+      "hide": 0.9
+    }
+  },
+  "c6": {
+    "choice": "hide",
+    "confidence": 0.9,
+    "probabilities": {
+      "full": 0.05,
+      "short": 0.05,
+      "hide": 0.9
+    }
+  },
+  "c7": {
+    "choice": "hide",
+    "confidence": 0.9,
+    "probabilities": {
+      "full": 0.05,
+      "short": 0.05,
+      "hide": 0.9
+    }
+  },
+  "has_error": {
+    "noul": 0.02
+  },
+  "tier": {
+    "choice": "cheap",
+    "confidence": 0.93,
+    "probabilities": {
+      "cheap": 0.93,
+      "frontier": 0.07
+    }
+  }
+}

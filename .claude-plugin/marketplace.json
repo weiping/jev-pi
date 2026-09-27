@@ -1,0 +1,14 @@
+{
+  "name": "jev-engineering",
+  "owner": {"name": "weiping", "url": "https://github.com/weiping"},
+  "description": "Jev engineering for Claude Code: typed, fast, cheap decisions in the agent loop.",
+  "plugins": [
+    {
+      "name": "jev",
+      "source": "./plugins/jev",
+      "description": "Use TypeSafe Jev inside Claude Code: permission gate, output visibility ladder, conditional instructions, subagent routing and dedupe, shared retrieval.",
+      "category": "productivity",
+      "tags": ["jev", "typesafe", "hooks", "cost", "latency"]
+    }
+  ]
+}
