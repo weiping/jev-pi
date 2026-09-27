@@ -4,7 +4,7 @@ A [pi](https://github.com/earendil-works/pi) extension that puts [TypeSafe Jev](
 loop to make coding agents faster and cheaper. Jev answers typed questions (choice / score / yes-no) with
 probabilities; the extension keeps every threshold and branch in code.
 
-Port of the original `jev-claude-code` plugin (kept under `plugins/` for reference) to pi mechanisms:
+A pi port of the original `jev-claude-code` plugin, rebuilt on pi mechanisms:
 **extension + skills + prompt templates**.
 
 | Component | pi mechanism | What it does |
@@ -85,7 +85,7 @@ ln -sfn .../pi-coding-agent/node_modules/@types/node node_modules/@types/node
 npx -y -p typescript@5.9 tsc -p tsconfig.json
 ```
 
-## Differences from the Claude Code version
+## Differences from the original Claude Code plugin
 
 - Hooks are in-process TypeScript events instead of stdin/stdout Python scripts; the Jev client is
   plain `fetch` against `https://api.typesafe.ai/v1/systemone`, so no venv or `setup.sh`.
