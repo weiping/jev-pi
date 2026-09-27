@@ -10,12 +10,12 @@ import * as fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { ask, ceilLevel, deepMerge } from "../extension/jev/jevlib.ts";
-import { gateDecision, isSimpleReadonly, scriptText, tokenize } from "../extension/jev/permission-gate.ts";
-import { buildLadderOutput, chunkLines } from "../extension/jev/output-ladder.ts";
-import { routerDecision } from "../extension/jev/agent-router.ts";
-import { buildContext, globMatch } from "../extension/jev/prompt-context.ts";
-import { recallText, statsText } from "../extension/jev/commands.ts";
+import { ask, ceilLevel, deepMerge } from "../extensions/jev/jevlib.ts";
+import { gateDecision, isSimpleReadonly, scriptText, tokenize } from "../extensions/jev/permission-gate.ts";
+import { buildLadderOutput, chunkLines } from "../extensions/jev/output-ladder.ts";
+import { routerDecision } from "../extensions/jev/agent-router.ts";
+import { buildContext, globMatch } from "../extensions/jev/prompt-context.ts";
+import { recallText, statsText } from "../extensions/jev/commands.ts";
 
 let passed = 0;
 const failures: string[] = [];

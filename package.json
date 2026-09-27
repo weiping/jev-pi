@@ -1,9 +1,25 @@
 {
-	"name": "jev-pi",
-	"private": true,
-	"type": "module",
-	"description": "Jev for pi: TypeSafe System One judgments in the agent loop (extension + skills + prompts)",
-	"scripts": {
-		"test": "tsx tests/test-extension.ts"
-	}
+  "name": "jev-pi",
+  "version": "0.1.0",
+  "description": "Jev for pi: TypeSafe System One judgments in the agent loop (permission gate, output ladder, conditional context, agent router)",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "files": [
+    "extensions",
+    "skills",
+    "prompts"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "typebox": "*"
+  },
+  "scripts": {
+    "test": "tsx tests/test-extension.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  }
 }

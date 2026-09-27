@@ -1,6 +1,6 @@
 # jev-pi
 
-A [pi](https://github.com/earendil-works/pi) extension that puts [TypeSafe Jev](https://docs.typesafe.ai) in the agent
+A [pi package](https://github.com/earendil-works/pi) that puts [TypeSafe Jev](https://docs.typesafe.ai) in the agent
 loop to make coding agents faster and cheaper. Jev answers typed questions (choice / score / yes-no) with
 probabilities; the extension keeps every threshold and branch in code.
 
@@ -27,22 +27,22 @@ Requirements: pi, git, and a TypeSafe API key (`jev-1.13.0`). TypeScript is comp
 at load time — no build step.
 
 ```bash
-# during development
-export TYPESAFE_API_KEY=ts_...
-pi --extension ./extension/jev
+# from npm
+pi install npm:jev-pi
 
-# stable: copy or symlink into your extensions directory
-ln -s "$PWD/extension/jev" ~/.pi/agent/extensions/jev
+# from git (pin a tag once published)
+pi install git:github.com/<you>/jev-pi@v0.1.0
+
+# try it once without touching settings
+pi -e npm:jev-pi        # or: pi -e ./jev-pi
+
+# project-local instead of personal
+pi install ./jev-pi -l
 ```
 
-Optionally expose the skills and prompt templates to all sessions:
-
-```bash
-ln -s "$PWD/skills/jev" ~/.pi/agent/skills/jev          # or keep them project-level in .pi/skills/
-ln -s "$PWD/prompts" ~/.pi/agent/prompts/jev-roles       # prompt dir holds direct .md children
-```
-
-The first session in a project writes runtime state and logs to `.pi/jev/` (self-ignored).
+The package layout follows pi conventions (`extensions/`, `skills/`, `prompts/`), so no
+manifest is needed. The first session in a project writes runtime state and logs to
+`.pi/jev/` (self-ignored).
 
 ## Set up a project
 
@@ -61,7 +61,7 @@ or for a single session: `JEV_MODE=enforce pi`.
 
 ## Configuration
 
-Defaults live in `extension/jev/config/default.json`; `.pi/jev/config.json` in a project is
+Defaults live in `extensions/jev/config/default.json`; `.pi/jev/config.json` in a project is
 deep-merged on top (lists are replaced, so add project deny rules under
 `permission.extra_deny_patterns`).
 

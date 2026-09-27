@@ -10,5 +10,5 @@
 		"types": ["node"],
 		"erasableSyntaxOnly": true
 	},
-	"include": ["extension/**/*.ts", "tests/**/*.ts"]
+	"include": ["extensions/**/*.ts", "tests/**/*.ts"]
 }
