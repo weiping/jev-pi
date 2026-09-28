@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install pi (provides extension types via jiti resolution)
+        run: npm install -g @earendil-works/pi-coding-agent
+      - name: Link typecheck dependencies
+        run: |
+          PI_ROOT="$(npm root -g)"
+          PI_PKG="$PI_ROOT/@earendil-works/pi-coding-agent"
+          mkdir -p node_modules/@earendil-works node_modules/@types
+          ln -s "$PI_PKG" node_modules/@earendil-works/pi-coding-agent
+          ln -s "$PI_PKG/node_modules/typebox" node_modules/typebox
+          ln -s "$PI_PKG/node_modules/@types/node" node_modules/@types/node
+      - name: Offline unit tests (mocked Jev, no API key)
+        run: npx -y tsx tests/test-extension.ts
+        env:
+          JEV_MOCK: "1"
+      - name: Typecheck
+        run: npx -y -p typescript@5.9 tsc -p tsconfig.json
+      - name: Package smoke (extension loads with mocked Jev)
+        run: |
+          JEV_MOCK=1 pi -e ./ -p --no-tools "reply with exactly: ok" | grep -qx ok

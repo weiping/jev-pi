@@ -29,7 +29,7 @@ export default async function jevExtension(pi: ExtensionAPI) {
 
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.hasUI) {
-			ctx.ui.setStatus("jev", statusLine(ctx.cwd));
+			ctx.ui.setStatus("jev", statusLine());
 		}
 		return undefined;
 	});

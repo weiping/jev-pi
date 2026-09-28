@@ -1,9 +1,16 @@
 /**
  * Shared helpers for the Jev pi extension: paths, config, client, mock transport,
- * logging, state. Direct port of plugins/jev/scripts/jevlib.py.
+ * logging, state. Port of plugins/jev/scripts/jevlib.py.
  *
- * Project-level files live in <project>/.pi/jev/ (config.json, rules.json, tools.json);
- * runtime state in .pi/jev/state/ and decision logs in .pi/jev/logs/, each self-ignored.
+ * Path model (v0.2 semantics, synced from jev-claude-code 197272b):
+ * - `project()` is the SESSION root: the git toplevel of pi's working directory.
+ *   It is resolved once and never changes, mirroring CLAUDE_PROJECT_DIR.
+ * - `resolve(hint)` re-resolves the NEAREST `.pi/jev/` for a single hook invocation,
+ *   walking up from the invocation's own cwd (a Bash command or dispatched agent may
+ *   run inside a sibling checkout of a meta-workspace that carries its own config,
+ *   state and logs). Falls back to the session root.
+ * - `jevProjects()` lists the session root plus any direct child that carries its own
+ *   `.pi/jev/` — shared by prompt-context (per-project rules/tools) and stats.
  */
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -12,38 +19,106 @@ import { fileURLToPath } from "node:url";
 
 export const EXT_ROOT = path.dirname(fileURLToPath(import.meta.url));
 
-// ---------- project paths ----------
+// ---------- session root (stable for the whole session) ----------
 
-let projectCache: string | null = null;
+let sessionRoot: string | null = null;
 
+/** Session root: JEV_SESSION_ROOT override (checked every call, wins over cache), else the git toplevel of pi's working directory. */
 export function project(): string {
-	if (projectCache) return projectCache;
+	if (process.env.JEV_SESSION_ROOT) {
+		sessionRoot = path.resolve(process.env.JEV_SESSION_ROOT);
+		return sessionRoot;
+	}
+	if (sessionRoot) return sessionRoot;
 	const r = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf-8" });
-	projectCache =
-		r.status === 0 && r.stdout.trim() ? r.stdout.trim() : process.cwd();
-	return projectCache;
+	sessionRoot = r.status === 0 && r.stdout.trim() ? r.stdout.trim() : process.cwd();
+	return sessionRoot;
 }
 
-export function projectDir(cwd?: string): string {
-	// Event contexts carry the real working directory; use it when provided.
-	if (cwd && cwd !== projectCache) {
-		const r = spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf-8" });
-		if (r.status === 0 && r.stdout.trim()) {
-			projectCache = r.stdout.trim();
-			return projectCache;
+/** The `.pi/jev/` a single hook invocation should use, and its merged config. */
+export interface Resolved {
+	/** Project root whose `.pi/jev/` won the resolution. */
+	project: string;
+	projectJev: string;
+	state: string;
+	logs: string;
+	cfg: any;
+}
+
+export const JEV_DIR = path.join(".pi", "jev");
+
+/**
+ * Re-resolve the nearest `.pi/jev/` starting from `hint` (a hook's own cwd), instead of
+ * the session root fixed from pi's working directory. A Bash command or dispatched agent
+ * operating inside a sibling checkout of a meta-workspace — its own independent git
+ * repository, ignored by the session root's tree — picks up THAT sibling's own
+ * `.pi/jev/config.json`, state and logs. Falls back to the session root when no hint is
+ * given, the hint cannot be resolved, or no ancestor of the hint carries `.pi/jev/`.
+ */
+export function resolve(hint?: string): Resolved {
+	let root = project();
+	if (hint) {
+		let p: string;
+		try {
+			p = fs.statSync(hint).isFile() ? path.dirname(path.resolve(hint)) : path.resolve(hint);
+		} catch {
+			p = path.resolve(hint); // nonexistent path: treat it as a directory hint (matches pathlib semantics)
+		}
+		for (const d of [p, ...ancestors(p)]) {
+			if (fs.existsSync(path.join(d, JEV_DIR)) && fs.statSync(path.join(d, JEV_DIR)).isDirectory()) {
+				root = d;
+				break;
+			}
 		}
 	}
-	return project();
+	return resolvedFor(root);
 }
 
-export function piJev(cwd?: string): string {
-	return path.join(projectDir(cwd), ".pi", "jev");
+function resolvedFor(root: string): Resolved {
+	const projectJev = path.join(root, JEV_DIR);
+	return {
+		project: root,
+		projectJev,
+		state: path.join(projectJev, "state"),
+		logs: path.join(projectJev, "logs"),
+		cfg: mergeCfg(projectJev),
+	};
 }
-export function stateDir(cwd?: string): string {
-	return path.join(piJev(cwd), "state");
+
+function* ancestors(p: string): Generator<string> {
+	let cur = path.dirname(p);
+	while (cur !== path.dirname(cur)) {
+		yield cur;
+		cur = path.dirname(cur);
+	}
 }
-export function logsDir(cwd?: string): string {
-	return path.join(piJev(cwd), "logs");
+
+/**
+ * The session's own project root (always first), plus any direct child directory that
+ * carries its own `.pi/jev/` — a sibling checkout in a meta-workspace, its own
+ * independent git repository rather than part of the session root's git tree.
+ * Deliberately one level deep only, to stay fast and match the common
+ * "meta-repo with sibling repos" shape. Shared by prompt-context (matching each
+ * project's own rules.json/tools.json against its own changed files) and stats
+ * (summarizing every project's own decisions.jsonl in one place).
+ */
+export function jevProjects(): string[] {
+	const root = project();
+	const roots = [root];
+	let children: string[] = [];
+	try {
+		children = fs
+			.readdirSync(root, { withFileTypes: true })
+			.filter((d) => d.isDirectory())
+			.map((d) => path.join(root, d.name))
+			.sort();
+	} catch {
+		/* unreadable root */
+	}
+	for (const d of children) {
+		if (d !== root && fs.existsSync(path.join(d, JEV_DIR))) roots.push(d);
+	}
+	return roots;
 }
 
 // ---------- config ----------
@@ -67,24 +142,26 @@ export function deepMerge<T>(base: T, over: any): T {
 	return out as T;
 }
 
-/** Plugin defaults, deep-merged with the project's .pi/jev/config.json. */
-export function loadConfig(cwd?: string): any {
-	const defaults = loadJson(path.join(EXT_ROOT, "config", "default.json"), {});
-	const projectCfg = loadJson(path.join(piJev(cwd), "config.json"), {});
-	return deepMerge(defaults, projectCfg);
+function mergeCfg(projectJev: string): any {
+	return deepMerge(loadJson(path.join(EXT_ROOT, "config", "default.json"), {}), loadJson(path.join(projectJev, "config.json"), {}));
 }
 
-/** rules.json / tools.json live in the project; missing means the feature is off. */
-export function projectFile(name: string, fallback: unknown, cwd?: string): any {
-	return loadJson(path.join(piJev(cwd), name), fallback);
+/** Session-root config. Per-invocation callers should use `resolve(hint).cfg` instead. */
+export function loadConfig(): any {
+	return mergeCfg(path.join(project(), JEV_DIR));
+}
+
+/** rules.json / tools.json live in a project; missing means the feature is off. */
+export function projectFile(name: string, projectJev: string, fallback: unknown): any {
+	return loadJson(path.join(projectJev, name), fallback);
 }
 
 /** shadow: ask Jev and log, never change behavior. enforce: act on answers. */
-export function mode(cfg: any): string {
-	return process.env.JEV_MODE || cfg.mode || "shadow";
+export function mode(cfg?: any): string {
+	return process.env.JEV_MODE || (cfg ?? loadConfig()).mode || "shadow";
 }
 
-// ---------- state ----------
+// ---------- state (base = a Resolved.state directory; session root by default) ----------
 
 function ensure(dir: string): void {
 	fs.mkdirSync(dir, { recursive: true });
@@ -92,25 +169,27 @@ function ensure(dir: string): void {
 	if (!fs.existsSync(ignore)) fs.writeFileSync(ignore, "*\n");
 }
 
-export function stateRead(name: string, fallback: any = null, cwd?: string): any {
-	const p = path.join(stateDir(cwd), name);
+export function stateRead(name: string, fallback: any = null, base?: string): any {
+	const p = path.join(base ?? path.join(project(), JEV_DIR, "state"), name);
 	if (!fs.existsSync(p)) return fallback;
 	const text = fs.readFileSync(p, "utf-8");
 	return name.endsWith(".json") ? JSON.parse(text) : text;
 }
 
-export function stateWrite(name: string, value: any, cwd?: string): string {
-	ensure(stateDir(cwd));
-	const p = path.join(stateDir(cwd), name);
+export function stateWrite(name: string, value: any, base?: string): string {
+	const dir = base ?? path.join(project(), JEV_DIR, "state");
+	ensure(dir);
+	const p = path.join(dir, name);
 	fs.mkdirSync(path.dirname(p), { recursive: true });
 	fs.writeFileSync(p, name.endsWith(".json") ? JSON.stringify(value, null, 2) : String(value));
 	return p;
 }
 
-export function log(event: Record<string, unknown>, cwd?: string): void {
-	ensure(logsDir(cwd));
-	const row = { ts: new Date().toISOString().replace("T", " ").slice(0, 19), ...event };
-	fs.appendFileSync(path.join(logsDir(cwd), "decisions.jsonl"), JSON.stringify(row) + "\n");
+export function log(event: Record<string, unknown>, base?: string, cfg?: any): void {
+	const dir = base ?? path.join(project(), JEV_DIR, "logs");
+	ensure(dir);
+	const row = { ts: new Date().toISOString().replace("T", " ").slice(0, 19), mode: mode(cfg), ...event };
+	fs.appendFileSync(path.join(dir, "decisions.jsonl"), JSON.stringify(row) + "\n");
 }
 
 // ---------- question and answer types ----------
@@ -186,9 +265,9 @@ export async function ask(
 	hook: string,
 	state: unknown,
 	questions: Record<string, Question>,
-	cwd?: string,
+	opts?: { cfg?: any; logs?: string },
 ): Promise<Record<string, Answer>> {
-	const cfg = loadConfig(cwd);
+	const cfg = opts?.cfg ?? loadConfig();
 	const budgetMs = (cfg.timeout_s ?? 8) * 1000;
 	const started = Date.now();
 
@@ -220,14 +299,14 @@ export async function ask(
 	log(
 		{
 			hook,
-			mode: mode(cfg),
 			model: res.model,
 			latency_ms: Date.now() - started,
 			input_tokens: res.usage?.input_tokens ?? 0,
 			questions: Object.keys(questions),
 			answers: res.answers,
 		},
-		cwd,
+		opts?.logs,
+		cfg,
 	);
 	return res.answers;
 }
@@ -252,12 +331,12 @@ async function withRetry<T>(budgetMs: number, fn: (signal: AbortSignal) => Promi
 }
 
 /** Run a handler; any unexpected error means: no decision, error logged. */
-export async function guard<R>(hook: string, fn: () => Promise<R | void> | R | void, cwd?: string): Promise<R | void> {
+export async function guard<R>(hook: string, fn: () => Promise<R | void> | R | void, r?: Resolved): Promise<R | void> {
 	try {
 		return await fn();
 	} catch (e: any) {
 		try {
-			log({ hook, mode: mode(loadConfig(cwd)), error: String(e?.message ?? e) }, cwd);
+			log({ hook, error: String(e?.message ?? e) }, r?.logs, r?.cfg);
 		} catch {
 			/* logging itself failed; stay silent */
 		}

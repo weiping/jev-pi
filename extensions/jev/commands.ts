@@ -11,7 +11,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { EXT_ROOT, type Question, ask, guard, loadConfig, logsDir, mode, piJev, projectDir, stateDir, stateWrite } from "./jevlib.ts";
+import { EXT_ROOT, JEV_DIR, type Question, ask, guard, jevProjects, loadConfig, log, mode, project, stateWrite } from "./jevlib.ts";
 
 const INIT_INSTRUCTIONS = `Set up the Jev extension for this project. Work only inside \`.pi/jev/\` in the project root; do not touch application code.
 
@@ -27,10 +27,10 @@ const INIT_INSTRUCTIONS = `Set up the Jev extension for this project. Work only 
 4. Write \`.pi/jev/config.json\` with only the overrides this project needs. Keep \`"mode": "shadow"\`. Put project-specific sensitive path regexes in \`"permission": {"extra_deny_patterns": [...]}\` and make sure they do not match example files such as \`.env.example\`.
 5. Show me the three files and a short summary. Remind me that decisions are only logged until I set \`"mode": "enforce"\`, and that \`/jev:stats\` shows what has been logged.`;
 
-/** Port of stats.py: summarize decisions.jsonl. */
-export function statsText(cwd?: string): string {
-	const file = path.join(logsDir(cwd), "decisions.jsonl");
-	if (!fs.existsSync(file)) return "No Jev decisions logged yet.";
+/** One project's summary; empty string if it has no log yet. */
+export function summarizeProject(root: string): string {
+	const file = path.join(root, JEV_DIR, "logs", "decisions.jsonl");
+	if (!fs.existsSync(file)) return "";
 	const rows = fs
 		.readFileSync(file, "utf-8")
 		.split("\n")
@@ -70,6 +70,22 @@ export function statsText(cwd?: string): string {
 	return lines.join("\n");
 }
 
+/**
+ * Port of stats.py (v0.2.1): summarize every jev project's own decisions.jsonl in one
+ * place — hooks resolve to a sibling's own logs when a command or dispatch runs inside
+ * it, so a single session-root summary would silently miss all of that activity.
+ * A workspace with no siblings prints exactly what it always did.
+ */
+export function statsText(): string {
+	const projects = jevProjects();
+	const blocks = projects.map((root) => {
+		const text = summarizeProject(root);
+		return projects.length === 1 ? text : `== ${root} (${root === projects[0] ? "session root" : "sibling"}) ==\n${text || "No Jev decisions logged yet."}`;
+	}).filter(Boolean);
+	if (!blocks.length) return "No Jev decisions logged yet.";
+	return blocks.join("\n\n");
+}
+
 function git(args: string[], cwd: string): string {
 	return spawnSync("git", args, { cwd, encoding: "utf-8" }).stdout ?? "";
 }
@@ -89,7 +105,7 @@ export async function buildSnapshot(base: string, cwd: string): Promise<{ writte
 			},
 		]),
 	);
-	const answers = await ask("snapshot", { diff: diff.slice(0, 60000) }, questions, cwd);
+	const answers = await ask("snapshot", { diff: diff.slice(0, 60000) }, questions, { logs: path.join(project(), JEV_DIR, "logs") });
 	const scores = files
 		.slice(0, 100)
 		.map((f, i) => ({ f, score: (answers[`f${i}`] as { score: number }).score }))
@@ -134,7 +150,7 @@ export async function registerCommands(pi: ExtensionAPI): Promise<void> {
 	pi.registerCommand("jev:stats", {
 		description: "Show how the Jev extension has behaved (calls, latency, decisions, output savings)",
 		handler: async (_args, ctx) => {
-			const text = statsText(ctx.cwd);
+			const text = statsText();
 			pi.sendUserMessage(
 				`Current Jev decision log summary:\n\n${text}\n\nSummarize this for me in a few sentences. ` +
 					"Point out anything that suggests a threshold in .pi/jev/config.json should change, for example " +
@@ -147,7 +163,7 @@ export async function registerCommands(pi: ExtensionAPI): Promise<void> {
 		description: "Build one shared change snapshot, then run read-only reviewers in parallel on it",
 		handler: async (args, ctx) => {
 			const base = args.trim() || "HEAD";
-			const cwd = ctx.cwd ?? projectDir();
+			const cwd = ctx.cwd ?? project();
 			try {
 				const { written, summary } = await buildSnapshot(base, cwd);
 				ctx.ui.notify(`Snapshot: ${summary}`, "info");
@@ -201,13 +217,12 @@ export async function registerCommands(pi: ExtensionAPI): Promise<void> {
 			return guard(
 				"jev_ask",
 				async () => {
-					const answers = await ask("jev_ask", params.state, params.questions as Record<string, Question>, ctx?.cwd);
+					const answers = await ask("jev_ask", params.state, params.questions as Record<string, Question>);
 					return {
 						content: [{ type: "text" as const, text: JSON.stringify(answers, null, 2) }],
 						details: { answers },
 					};
 				},
-				ctx?.cwd,
 			).then((r) => {
 				if (r && typeof r === "object" && "content" in (r as any)) return r as any;
 				throw new Error("jev_ask failed — see .pi/jev/logs/decisions.jsonl");
@@ -216,10 +231,8 @@ export async function registerCommands(pi: ExtensionAPI): Promise<void> {
 	});
 }
 
-export function statusLine(cwd?: string): string {
-	const cfg = loadConfig(cwd);
+export function statusLine(): string {
+	const cfg = loadConfig();
 	const key = process.env.TYPESAFE_API_KEY || process.env.JEV_MOCK ? "" : " (no API key)";
-	return `jev: ${mode(cfg)}${key} · ${piJev(cwd)}`;
+	return `jev: ${mode(cfg)}${key} · ${path.join(project(), JEV_DIR)}`;
 }
-
-export { stateDir };

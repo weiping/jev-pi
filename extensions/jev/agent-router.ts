@@ -10,7 +10,7 @@
  * otherwise blocks with guidance.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { type Answer, type ChoiceAnswer, type ScoreAnswer, ask, ceilLevel, guard, loadConfig, log, mode, projectDir, stateRead, stateWrite } from "./jevlib.ts";
+import { type Answer, type ChoiceAnswer, type ScoreAnswer, ask, ceilLevel, guard, log, mode, resolve, stateRead, stateWrite } from "./jevlib.ts";
 
 export const DISPATCH_TOOLS = ["dispatch_agent", "dispatch-agent", "agent", "Task", "task"];
 
@@ -71,13 +71,15 @@ export function registerAgentRouter(pi: ExtensionAPI): void {
 		return guard(
 			"agent_router",
 			async () => {
-				const cwd = ctx?.cwd ?? projectDir();
-				const cfgAll = loadConfig(cwd);
-				const cfg = cfgAll.routing;
+				// 跟 permission_gate 同样的道理：这次派发是在哪个目录下发起的，就用哪个 `.pi/jev/`
+				// （见 jevlib.resolve 的说明）。agent_done 必须用同一个 hint 算出同一个 state 目录，
+				// 否则 dedupe 登记表和这里对不上。
+				const r = resolve(ctx?.cwd);
+				const cfg = r.cfg.routing;
 				const input = event.input as Record<string, any>;
 				const task = String(`${input.description ?? ""}\n${input.task ?? input.prompt ?? ""}`).slice(0, 6000);
 				const agent = String(input.subagent_type ?? input.role ?? "general-purpose");
-				const registry = (stateRead("subgoals.json", {}, cwd) ?? {}) as Record<string, Subgoal>;
+				const registry = (stateRead("subgoals.json", {}, r.state) ?? {}) as Record<string, Subgoal>;
 				const recent = Object.fromEntries(Object.entries(registry).slice(-50)); // choice 最多 255 个选项
 
 				const questions: Record<string, any> = {
@@ -110,16 +112,16 @@ export function registerAgentRouter(pi: ExtensionAPI): void {
 
 				let a: Record<string, Answer>;
 				try {
-					a = await ask("agent_router", { task, requested_agent: agent }, questions, cwd);
+					a = await ask("agent_router", { task, requested_agent: agent }, questions, { cfg: r.cfg, logs: r.logs });
 				} catch (e: any) {
-					log({ hook: "agent_router", mode: "shadow", error: String(e?.message ?? e) }, cwd);
+					log({ hook: "agent_router", error: String(e?.message ?? e) }, r.logs, r.cfg);
 					return undefined;
 				}
 
 				const isCheap =
 					cfg.cheap_agents.includes(agent) || input.model === cfg.cheap_model;
 				const out = routerDecision(a, isCheap, cfg);
-				const enforce = mode(cfgAll) === "enforce";
+				const enforce = mode(r.cfg) === "enforce";
 
 				let result: { block: boolean; reason: string } | undefined;
 				if (out.action === "deny") {
@@ -148,23 +150,22 @@ export function registerAgentRouter(pi: ExtensionAPI): void {
 
 				if (!result) {
 					registry[event.toolCallId] = { text: task.slice(0, 600), status: "running" };
-					stateWrite("subgoals.json", registry, cwd);
+					stateWrite("subgoals.json", registry, r.state);
 				}
 				log(
 					{
 						hook: "agent_router",
-						mode: enforce ? "enforce" : "shadow",
 						agent,
 						tier: (a.tier as ChoiceAnswer).choice,
 						level: ceilLevel((a.sensitivity as ScoreAnswer).score),
 						action: result ? "deny" : out.action,
 						downgraded: out.action === "downgrade" && "model" in input,
 					},
-					cwd,
+					r.logs,
+					r.cfg,
 				);
 				return enforce ? result : undefined;
 			},
-			ctx?.cwd,
 		);
 	});
 
@@ -173,8 +174,10 @@ export function registerAgentRouter(pi: ExtensionAPI): void {
 		return guard(
 			"agent_done",
 			async () => {
-				const cwd = ctx?.cwd ?? projectDir();
-				const registry = (stateRead("subgoals.json", {}, cwd) ?? {}) as Record<string, Subgoal>;
+				// 必须跟 agent_router 用同一个 hint 解析出同一个 state 目录，否则这里找不到
+				// 那次派发登记的 subgoal（dedupe 登记表就对不上了）。
+				const r = resolve(ctx?.cwd);
+				const registry = (stateRead("subgoals.json", {}, r.state) ?? {}) as Record<string, Subgoal>;
 				const entry = registry[event.toolCallId];
 				if (!entry) return undefined;
 				const text = (event.content as any[])
@@ -183,11 +186,10 @@ export function registerAgentRouter(pi: ExtensionAPI): void {
 					.join(" ");
 				entry.status = event.isError ? "running" : "done";
 				entry.result = text.slice(0, 600);
-				stateWrite("subgoals.json", registry, cwd);
-				log({ hook: "agent_done", mode: "shadow", subgoal: event.toolCallId, status: entry.status }, cwd);
+				stateWrite("subgoals.json", registry, r.state);
+				log({ hook: "agent_done", subgoal: event.toolCallId, status: entry.status }, r.logs, r.cfg);
 				return undefined;
 			},
-			ctx?.cwd,
 		);
 	});
 }

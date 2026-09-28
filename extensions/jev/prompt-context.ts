@@ -1,10 +1,18 @@
 /**
  * Conditional project context: remember the request, load relevant guidance,
- * suggest project tools. Port of plugins/jev/scripts/prompt_context.py +
+ * suggest project tools. Port of plugins/jev/scripts/prompt_context.py (v0.2
+ * meta-workspace semantics, synced from jev-claude-code 197272b) +
  * session_context.py.
  *
- * - pi.on("input") records the current user request to state (other handlers
- *   use it as the "current query").
+ * Meta-workspace support: besides the session's own project root, this also looks one
+ * level down for sibling directories that carry their own `.pi/jev/` — a repo living
+ * inside a meta-workspace root that is not itself part of that root's git tree. Each
+ * such sibling is treated as its own Jev project: its own `git diff` scope, its own
+ * rules.json/tools.json, `load` paths resolved relative to its own directory. One
+ * level deep only. The session's own project root is always project index 0 with
+ * unprefixed question ids, so a workspace with no siblings behaves exactly as before.
+ *
+ * - pi.on("input") records the current user request to session-root state.
  * - pi.on("before_agent_start") computes the context and injects it as a
  *   system-prompt section. Sections are re-sent every request, so re-injection
  *   after compaction is inherent — the pinned context survives /compact.
@@ -19,29 +27,16 @@ import {
 	type NoulAnswer,
 	ask,
 	guard,
+	jevProjects,
 	loadConfig,
 	log,
 	mode,
-	piJev,
-	projectDir,
 	projectFile,
+	resolve,
 	stateWrite,
 } from "./jevlib.ts";
 
 export const SECTION_TAG = "jev-project-context";
-
-export function touchedFiles(cwd: string): string[] {
-	const cmds = [
-		["diff", "--name-only", "HEAD"],
-		["ls-files", "--others", "--exclude-standard"],
-	];
-	const files: string[] = [];
-	for (const args of cmds) {
-		const r = spawnSync("git", args, { cwd, encoding: "utf-8" });
-		files.push(...r.stdout.split(/\s+/).filter(Boolean));
-	}
-	return [...new Set(files)];
-}
 
 export interface Rule {
 	id: string;
@@ -50,24 +45,107 @@ export interface Rule {
 	when_jev?: string;
 }
 
-/** Pure composition: rules + tool answers in, context string out. */
-export function buildContext(
-	rules: Rule[],
-	tools: Record<string, { what: string; how: string }>,
-	files: string[],
-	answers: Record<string, Answer> | null,
-	loadedByGlob: Rule[],
-	cfg: { rule_threshold: number; tool_top_k: number; tool_min_prob: number; max_chars: number },
-	project: string,
-): string {
-	const loaded = [...loadedByGlob];
-	if (answers) {
-		for (const r of rules) {
-			if (r.when_jev) {
-				const ans = answers[`rule_${r.id}`] as NoulAnswer | undefined;
-				if (ans && ans.noul >= cfg.rule_threshold) loaded.push(r);
-			}
+export interface ProjectEntry {
+	root: string;
+	projectJev: string;
+	rules: Rule[];
+	tools: Record<string, { what: string; how: string }>;
+	files: string[];
+}
+
+export function touchedFiles(root: string): string[] {
+	const cmds = [
+		["diff", "--name-only", "HEAD"],
+		["ls-files", "--others", "--exclude-standard"],
+	];
+	const files: string[] = [];
+	for (const args of cmds) {
+		const r = spawnSync("git", args, { cwd: root, encoding: "utf-8" });
+		files.push(...r.stdout.split(/\s+/).filter(Boolean));
+	}
+	return [...new Set(files)];
+}
+
+/** Each jev project that has rules or tools, with its own changed-file scope. */
+export function collectProjects(roots: string[]): ProjectEntry[] {
+	const projects: ProjectEntry[] = [];
+	for (const root of roots) {
+		const projectJev = path.join(root, ".pi", "jev");
+		const rules = projectFile("rules.json", projectJev, []) as Rule[];
+		const tools = projectFile("tools.json", projectJev, {});
+		if (rules.length || Object.keys(tools).length) {
+			projects.push({ root, projectJev, rules, tools, files: touchedFiles(root) });
 		}
+	}
+	return projects;
+}
+
+export interface Plan {
+	questions: Record<string, any>;
+	askState: Record<string, unknown>;
+	/** Glob-matched rules that load without asking Jev: [(root, rule)]. */
+	preloaded: [string, Rule][];
+	/** "{i}:{tid}" (or plain tid for project 0) -> [root, tid, tool]. */
+	toolLookup: Map<string, [string, string, { what: string; how: string }]>;
+	toolCriteria: Record<string, string>;
+}
+
+/** Build the single merged Jev request across all projects, with per-project id namespacing. */
+export function planQuestions(prompt: string, projects: ProjectEntry[]): Plan {
+	const questions: Record<string, any> = {};
+	const askState: Record<string, unknown> = { user_request: prompt };
+	const preloaded: [string, Rule][] = [];
+	const toolCriteria: Record<string, string> = {};
+	const toolLookup = new Map<string, [string, string, { what: string; how: string }]>();
+	let noneText: string | undefined;
+
+	projects.forEach((p, i) => {
+		const tag = i === 0 ? "" : `s${i}_`; // 会话根不加前缀，跟单项目时的问题 id 完全一致
+		for (const rule of p.rules) {
+			if (rule.when_files && p.files.some((f) => rule.when_files!.some((g) => globMatch(g, f)))) {
+				preloaded.push([p.root, rule]);
+			}
+			if (rule.when_jev) questions[`rule_${tag}${rule.id}`] = { type: "noul", instructions: rule.when_jev };
+		}
+		askState[`changed_files${i === 0 ? "" : `_${i}`}`] = p.files.slice(0, 200);
+		for (const [tid, tool] of Object.entries(p.tools)) {
+			if (tid === "none") {
+				if (noneText === undefined) noneText = tool.what;
+				continue;
+			}
+			const key = i === 0 ? tid : `s${i}:${tid}`;
+			toolCriteria[key] = tool.what;
+			toolLookup.set(key, [p.root, tid, tool]);
+		}
+	});
+	if (Object.keys(toolCriteria).length) {
+		toolCriteria.none = noneText || "None of the project tools is relevant to this request.";
+		questions.tool = {
+			type: "choice",
+			instructions: "Which project tool, if any, helps with `user_request`?",
+			criteria: toolCriteria,
+		};
+	}
+	return { questions, askState, preloaded, toolLookup, toolCriteria };
+}
+
+/** Pure composition: Jev answers in, context string out. */
+export function composeContext(
+	projects: ProjectEntry[],
+	plan: Plan,
+	answers: Record<string, Answer> | null,
+	cfg: { rule_threshold: number; tool_top_k: number; tool_min_prob: number; max_chars: number },
+): string {
+	const loaded: [string, Rule][] = [...plan.preloaded];
+	if (answers) {
+		projects.forEach((p, i) => {
+			const tag = i === 0 ? "" : `s${i}_`;
+			for (const rule of p.rules) {
+				if (!rule.when_jev) continue;
+				const ans = answers[`rule_${tag}${rule.id}`] as NoulAnswer | undefined;
+				if (ans && ans.noul >= cfg.rule_threshold) loaded.push([p.root, rule]);
+			}
+		});
 	}
 	let picked: string[] = [];
 	if (answers && answers.tool) {
@@ -75,28 +153,29 @@ export function buildContext(
 		picked = [...Object.keys(probs)]
 			.sort((x, y) => probs[y] - probs[x])
 			.slice(0, cfg.tool_top_k)
-			.filter((k) => k in tools && k !== "none" && probs[k] >= cfg.tool_min_prob);
+			.filter((k) => k in plan.toolCriteria && k !== "none" && probs[k] >= cfg.tool_min_prob);
 	}
 
 	const blocks: string[] = [];
-	for (const r of loaded) {
-		const p = path.join(project, r.load);
+	for (const [root, rule] of loaded) {
+		const p = path.join(root, rule.load);
 		if (fs.existsSync(p)) {
-			blocks.push(`Project guidance from ${r.load} applies to this request:\n` + fs.readFileSync(p, "utf-8"));
+			blocks.push(`Project guidance from ${rule.load} applies to this request:\n` + fs.readFileSync(p, "utf-8"));
 		}
 	}
 	if (picked.length) {
-		blocks.push(
-			"Project tools relevant to this request (read the help before use):\n" +
-				picked.map((k) => `- ${k}: ${tools[k]?.what ?? k} Usage: ${tools[k]?.how ?? ""}`).join("\n"),
-		);
+		const lines = picked.map((k) => {
+			const [_root, tid, tool] = plan.toolLookup.get(k)!;
+			return `- ${tid}: ${tool.what} Usage: ${tool.how}`;
+		});
+		blocks.push("Project tools relevant to this request (read the help before use):\n" + lines.join("\n"));
 	}
 	return blocks.join("\n\n").slice(0, cfg.max_chars);
 }
 
 export function registerPromptContext(pi: ExtensionAPI): void {
 	pi.on("input", (event) => {
-		// Record the current request; never transform it.
+		// Record the current request into the session root; never transform it.
 		if (event.text) {
 			try {
 				stateWrite("last_prompt.txt", event.text);
@@ -108,72 +187,47 @@ export function registerPromptContext(pi: ExtensionAPI): void {
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
-		return guard(
-			"prompt_context",
-			async () => {
-				const cwd = ctx?.cwd ?? projectDir();
-				const cfgAll = loadConfig(cwd);
-				const rules = projectFile("rules.json", [], cwd) as Rule[];
-				const tools = projectFile("tools.json", {}, cwd);
-				if (!rules.length && !tools) return undefined; // 还没运行 /jev:init，不花一次调用
-				const files = touchedFiles(cwd);
+		return guard("prompt_context", async () => {
+			const cfg = loadConfig().context; // 会话根配置决定 context 行为
+			const projects = collectProjects(jevProjects());
+			if (!projects.length) return undefined; // 还没运行 /jev:init，不花一次调用
 
-				const loadedByGlob = rules.filter(
-					(r) =>
-						r.when_files &&
-						files.some((f) => r.when_files!.some((g) => globMatch(g, f))),
-				);
-
-				const questions: Record<string, any> = {};
-				for (const r of rules) if (r.when_jev) questions[`rule_${r.id}`] = { type: "noul", instructions: r.when_jev };
-				if (tools && Object.keys(tools).length) {
-					questions.tool = {
-						type: "choice",
-						instructions: "Which project tool, if any, helps with `user_request`?",
-						criteria: Object.fromEntries(Object.entries(tools).map(([k, v]: any) => [k, v.what])),
-					};
+			const plan = planQuestions(event.prompt, projects);
+			let answers: Record<string, Answer> | null = null;
+			if (Object.keys(plan.questions).length) {
+				try {
+					answers = await ask("prompt_context", plan.askState, plan.questions);
+				} catch (e: any) {
+					log({ hook: "prompt_context", error: String(e?.message ?? e) });
 				}
+			}
 
-				let answers: Record<string, Answer> | null = null;
-				if (Object.keys(questions).length) {
-					try {
-						answers = await ask("prompt_context", { user_request: event.prompt, changed_files: files.slice(0, 200) }, questions, cwd);
-					} catch (e: any) {
-						log({ hook: "prompt_context", mode: "shadow", error: String(e?.message ?? e) }, cwd);
-					}
-				}
+			const context = composeContext(projects, plan, answers, cfg);
+			stateWrite("pinned_context.md", context); // 固定在会话根，compaction 后重注入
+			log({
+				hook: "prompt_context",
+				rules: plan.preloaded.map(([, rule]) => rule.id),
+				tools: (answers?.tool as ChoiceAnswer | undefined)?.choice ?? [],
+				chars: context.length,
+				projects: projects.map((p) => p.root),
+			});
+			if (!context || mode() !== "enforce") return undefined;
 
-				const context = buildContext(rules, tools, files, answers, loadedByGlob, cfgAll.context, projectDir(cwd));
-				stateWrite("pinned_context.md", context, cwd);
-				log(
-					{
-						hook: "prompt_context",
-						mode: mode(cfgAll) === "enforce" ? "enforce" : "shadow",
-						rules: loadedByGlob.map((r) => r.id),
-						tools: (answers?.tool as ChoiceAnswer | undefined)?.choice ?? [],
-						chars: context.length,
-					},
-					cwd,
-				);
-				if (!context || mode(cfgAll) !== "enforce") return undefined;
-
-				// In-place section update; pi records the delta and matches later updates by tag.
-				event.systemPromptOptions.sections[SECTION_TAG] = context;
-				return undefined;
-			},
-			ctx?.cwd,
-		);
+			// In-place section update; pi records the delta and matches later updates by tag.
+			event.systemPromptOptions.sections[SECTION_TAG] = context;
+			return undefined;
+		});
 	});
 
 	// Re-injection after compaction is inherent: sections are re-sent with every
 	// request and before_agent_start refreshes them from pinned_context state.
-	pi.on("session_compact", (_event, ctx) => {
-		log({ hook: "session_compact", mode: mode(loadConfig(ctx?.cwd)), note: "pinned context re-injects on next request" }, ctx?.cwd);
+	pi.on("session_compact", (_event, _ctx) => {
+		log({ hook: "session_compact", note: "pinned context re-injects on next request" });
 		return undefined;
 	});
 }
 
-/** fnmatch-style glob: * and ? wildcards, * does not cross "/" unless pattern has no "/". */
+/** fnmatch-style glob: `*` and `?` wildcards; `*` stays within one path segment unless the pattern uses a double-star prefix. */
 export function globMatch(pattern: string, file: string): boolean {
 	const re = new RegExp(
 		"^" +
@@ -185,3 +239,6 @@ export function globMatch(pattern: string, file: string): boolean {
 	);
 	return re.test(file);
 }
+
+// resolve is re-exported for command handlers that need the same per-invocation semantics
+export { resolve };

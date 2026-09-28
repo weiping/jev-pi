@@ -59,6 +59,17 @@ then turn it on:
 
 or for a single session: `JEV_MODE=enforce pi`.
 
+## Meta-workspaces
+
+A Bash command or dispatched subagent may run inside a sibling checkout that carries its
+own `.pi/jev/` (its own independent git repository inside the session root). Since v0.2
+every hook resolves the **nearest** `.pi/jev/` from its own working directory — the gate
+uses that sibling's deny patterns and mode, the ladder saves output to that sibling's
+state, and the router's dedupe registry stays whole. Conditional context and `/jev:stats`
+additionally scan one level deep for such siblings and merge every project's rules, tools,
+and decision logs (per-project id namespacing, one Jev request). A workspace without
+siblings behaves exactly as before.
+
 ## Configuration
 
 Defaults live in `extensions/jev/config/default.json`; `.pi/jev/config.json` in a project is

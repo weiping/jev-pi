@@ -10,11 +10,11 @@ import * as fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { ask, ceilLevel, deepMerge } from "../extensions/jev/jevlib.ts";
+import { ask, ceilLevel, deepMerge, jevProjects, resolve, stateRead, stateWrite } from "../extensions/jev/jevlib.ts";
 import { gateDecision, isSimpleReadonly, scriptText, tokenize } from "../extensions/jev/permission-gate.ts";
 import { buildLadderOutput, chunkLines } from "../extensions/jev/output-ladder.ts";
 import { routerDecision } from "../extensions/jev/agent-router.ts";
-import { buildContext, globMatch } from "../extensions/jev/prompt-context.ts";
+import { collectProjects, composeContext, globMatch, planQuestions } from "../extensions/jev/prompt-context.ts";
 import { recallText, statsText } from "../extensions/jev/commands.ts";
 
 let passed = 0;
@@ -201,26 +201,142 @@ await test("globMatch handles *, ?, and path boundaries", () => {
 	assert.ok(!globMatch("*.py", "a.ts"));
 });
 
-await test("buildContext loads glob rules, jev rules, and top tools", () => {
+await test("planQuestions/composeContext load glob rules, jev rules, and top tools", () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jev-ctx-"));
 	fs.writeFileSync(path.join(dir, "guide.md"), "read me first");
 	const rules = [
 		{ id: "r1", load: "guide.md", when_files: ["*.md"] },
 		{ id: "r2", load: "guide.md", when_jev: "request is about guides" },
 	];
-	const tools = { fmt: { what: "formatter", how: "make fmt" }, none: { what: "none", how: "" } };
+	const tools = { fmt: { what: "formatter", how: "make fmt" }, none: { what: "none relevant", how: "" } };
+	const projects = [{ root: dir, projectJev: path.join(dir, ".pi", "jev"), rules, tools, files: ["guide.md"] }];
+	const plan = planQuestions("format the guide", projects);
+	assert.ok(plan.questions.rule_r2, "index-0 rule id is unprefixed");
+	assert.ok(plan.questions.tool, "tool question present");
+	assert.equal((plan.questions.tool as any).criteria.none, "none relevant");
+	assert.deepEqual(plan.preloaded.map(([, r]) => r.id), ["r1"], "glob rule preloads");
 	const answers: any = {
 		rule_r2: noul(0.7),
 		tool: { type: "choice", choice: "fmt", confidence: 0.9, probabilities: { fmt: 0.8, none: 0.2 } },
 	};
-	const ctx = buildContext(rules, tools, ["guide.md"], answers, [rules[0]], { rule_threshold: 0.6, tool_top_k: 3, tool_min_prob: 0.2, max_chars: 9000 }, dir);
+	const ctx = composeContext(projects, plan, answers, { rule_threshold: 0.6, tool_top_k: 3, tool_min_prob: 0.2, max_chars: 9000 });
 	assert.match(ctx, /read me first/);
 	assert.match(ctx, /formatter/);
 	assert.match(ctx, /make fmt/);
-	// below threshold: rule not loaded twice, tool filtered out
-	const ctx2 = buildContext(rules, tools, [], { rule_r2: noul(0.2), tool: { type: "choice", choice: "none", confidence: 0.9, probabilities: { none: 1 } } }, [], { rule_threshold: 0.6, tool_top_k: 3, tool_min_prob: 0.2, max_chars: 9000 }, dir);
-	assert.equal(ctx2, "");
+	// below threshold: jev rule not loaded, tool filtered out; glob rule still loads
+	const ctx2 = composeContext(projects, plan, { rule_r2: noul(0.2), tool: { type: "choice", choice: "none", confidence: 0.9, probabilities: { none: 1 } } }, { rule_threshold: 0.6, tool_top_k: 3, tool_min_prob: 0.2, max_chars: 9000 });
+	assert.ok(ctx2.includes("read me first"), "glob-matched rule still loads");
+	assert.ok(!ctx2.includes("formatter"), "below-threshold tool filtered out");
 	fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// ---------- meta-workspace: per-invocation resolve + sibling projects ----------
+
+function makeMetaWorkspace(): string {
+	const meta = fs.mkdtempSync(path.join(os.tmpdir(), "jev-meta-"));
+	for (const [name, secret] of [["root-repo", "TOP_SECRET"], ["sibling-repo", "SIB_SECRET"]] as const) {
+		const repo = path.join(meta, name);
+		fs.mkdirSync(path.join(repo, ".pi", "jev"), { recursive: true });
+		spawnSync("git", ["init", "-q"], { cwd: repo });
+		fs.writeFileSync(
+			path.join(repo, ".pi", "jev", "config.json"),
+			JSON.stringify({ permission: { extra_deny_patterns: [secret] } }),
+		);
+	}
+	return meta;
+}
+
+await test("resolve(hint) picks the nearest .pi/jev, falling back to the session root", () => {
+	const meta = makeMetaWorkspace();
+	process.env.JEV_SESSION_ROOT = meta;
+	const rootRepo = path.join(meta, "root-repo");
+	const sibling = path.join(meta, "sibling-repo");
+
+	const rRoot = resolve(path.join(rootRepo, "src", "main.ts"));
+	assert.equal(rRoot.project, rootRepo);
+	assert.ok(rRoot.cfg.permission.extra_deny_patterns.includes("TOP_SECRET"));
+
+	const rSib = resolve(path.join(sibling, "deep", "dir", "file.txt"));
+	assert.equal(rSib.project, sibling);
+	assert.ok(rSib.cfg.permission.extra_deny_patterns.includes("SIB_SECRET"));
+	assert.ok(!rSib.cfg.permission.extra_deny_patterns.includes("TOP_SECRET"), "sibling isolation both ways");
+
+	assert.equal(resolve().project, meta, "no hint falls back to session root");
+	assert.equal(resolve(path.join(os.tmpdir())).project, meta, "unrelated hint falls back to session root");
+
+	assert.deepEqual(jevProjects(), [meta, rootRepo, sibling]);
+	delete process.env.JEV_SESSION_ROOT;
+	fs.rmSync(meta, { recursive: true, force: true });
+});
+
+await test("prompt-context merges siblings into one request with per-project ids", () => {
+	const meta = makeMetaWorkspace();
+	process.env.JEV_SESSION_ROOT = meta;
+	const rootRepo = path.join(meta, "root-repo");
+	const sibling = path.join(meta, "sibling-repo");
+	for (const [repo, tag] of [[rootRepo, "one"], [sibling, "two"]] as const) {
+		fs.writeFileSync(
+			path.join(repo, ".pi", "jev", "rules.json"),
+			JSON.stringify([{ id: tag, load: "GOTCHAS.md", when_jev: `request touches ${tag}` }]),
+		);
+		fs.writeFileSync(
+			path.join(repo, ".pi", "jev", "tools.json"),
+			JSON.stringify({ fmt: { what: `${tag} formatter`, how: `make ${tag}` }, none: { what: `nothing for ${tag}`, how: "" } }),
+		);
+		fs.writeFileSync(path.join(repo, "GOTCHAS.md"), `guidance for ${tag}`);
+	}
+
+	const projects = collectProjects(jevProjects());
+	assert.equal(projects.length, 2, "meta itself has no rules; both siblings participate");
+	const plan = planQuestions("touch one and two", projects);
+	// first participant (root-repo) is index 0 and unprefixed; sibling is s1_
+	assert.ok(plan.questions.rule_one);
+	assert.ok(plan.questions.rule_s1_two);
+	assert.ok((plan.questions.tool as any).criteria.fmt);
+	assert.ok((plan.questions.tool as any).criteria["s1:fmt"]);
+	assert.equal((plan.questions.tool as any).criteria.none, "nothing for one", "first project's none text wins");
+	const answers: any = {
+		rule_one: noul(0.9),
+		rule_s1_two: noul(0.9),
+		tool: { type: "choice", choice: "s1:fmt", confidence: 0.9, probabilities: { "s1:fmt": 0.9, fmt: 0.1, none: 0 } },
+	};
+	const ctx = composeContext(projects, plan, answers, { rule_threshold: 0.6, tool_top_k: 3, tool_min_prob: 0.2, max_chars: 9000 });
+	assert.match(ctx, /guidance for one/);
+	assert.match(ctx, /guidance for two/);
+	assert.match(ctx, /two formatter/);
+	assert.ok(!ctx.includes("one formatter"), "only the picked sibling tool is listed");
+	fs.rmSync(meta, { recursive: true, force: true });
+});
+
+await test("agent_router and agent_done share one state via the same resolve hint", () => {
+	const meta = makeMetaWorkspace();
+	process.env.JEV_SESSION_ROOT = meta;
+	const sibling = path.join(meta, "sibling-repo");
+	// router registers under the sibling's state dir...
+	const r = resolve(sibling);
+	stateWrite("subgoals.json", { call1: { text: "port the router", status: "running" } }, r.state);
+	// ...and done reads through the same hint
+	const registry: any = stateRead("subgoals.json", {}, resolve(sibling).state);
+	assert.equal(registry.call1.status, "running");
+	assert.ok(fs.existsSync(path.join(sibling, ".pi", "jev", "state", "subgoals.json")));
+	delete process.env.JEV_SESSION_ROOT;
+	fs.rmSync(meta, { recursive: true, force: true });
+});
+
+await test("statsText summarizes every sibling with headers", () => {
+	const meta = makeMetaWorkspace();
+	process.env.JEV_SESSION_ROOT = meta;
+	const rootRepo = path.join(meta, "root-repo");
+	const logs = path.join(rootRepo, ".pi", "jev", "logs");
+	fs.mkdirSync(logs, { recursive: true });
+	fs.writeFileSync(path.join(logs, "decisions.jsonl"), JSON.stringify({ ts: "t", mode: "shadow", hook: "permission_gate", command: "ls", action: "allow", by: "jev", latency_ms: 5, input_tokens: 100, model: "jev-mock" }) + "\n");
+	const text = statsText();
+	assert.match(text, /\(session root\) ==/);
+	assert.match(text, /== .*root-repo \(sibling\) ==/);
+	assert.match(text, /== .*sibling-repo \(sibling\) ==/);
+	assert.match(text, /No Jev decisions logged yet\./);
+	delete process.env.JEV_SESSION_ROOT;
+	fs.rmSync(meta, { recursive: true, force: true });
 });
 
 // ---------- commands ----------
@@ -233,12 +349,7 @@ await test("recallText prints numbered ranges 1-based inclusive", () => {
 	fs.rmSync(f);
 });
 
-await test("statsText reports empty when a project has no logs", () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jev-stats-"));
-	spawnSync("git", ["init", "-q"], { cwd: dir });
-	assert.match(statsText(dir), /No Jev decisions logged/);
-	fs.rmSync(dir, { recursive: true, force: true });
-});
+
 
 // ---------- summary ----------
 

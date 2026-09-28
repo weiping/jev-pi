@@ -8,18 +8,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import {
-	type Answer,
-	type ChoiceAnswer,
-	type NoulAnswer,
-	ask,
-	guard,
-	loadConfig,
-	log,
-	mode,
-	projectDir,
-	stateRead,
-} from "./jevlib.ts";
+import { type Answer, type ChoiceAnswer, type NoulAnswer, ask, guard, log, mode, resolve, stateRead } from "./jevlib.ts";
 
 const SCRIPT_RUNNERS = new Set(["python", "python3", "bash", "sh", "node", "ruby"]);
 
@@ -122,15 +111,17 @@ export function registerPermissionGate(pi: ExtensionAPI): void {
 		return guard(
 			"permission_gate",
 			async () => {
-				const cfg = loadConfig(ctx?.cwd).permission;
+				// 这次 Bash 调用发生在哪个目录下，就用哪个 `.pi/jev/`（见 jevlib.resolve 的说明）
+				const r = resolve(ctx?.cwd);
+				const cfg = r.cfg.permission;
 				const cmd = String((event.input as any).command ?? "");
-				const cwd = ctx?.cwd ?? projectDir();
-				const enforce = mode(loadConfig(ctx?.cwd)) === "enforce";
+				const cwd = ctx?.cwd ?? r.project;
+				const enforce = mode(r.cfg) === "enforce";
 
 				// 1. 确定的规则，代码说了算
 				for (const pat of [...cfg.deny_patterns, ...(cfg.extra_deny_patterns ?? [])]) {
 					if (new RegExp(pat).test(cmd)) {
-						log({ hook: "permission_gate", mode: enforce ? "enforce" : "shadow", command: cmd, action: "deny", by: "rule", rule: pat }, cwd);
+						log({ hook: "permission_gate", command: cmd, action: "deny", by: "rule", rule: pat }, r.logs, r.cfg);
 						return enforce
 							? { block: true, reason: `Blocked by project rule: command matches \`${pat}\`.` }
 							: undefined;
@@ -140,23 +131,23 @@ export function registerPermissionGate(pi: ExtensionAPI): void {
 
 				// 2. 模糊判断，一次请求并行问完
 				const state = {
-					user_request: stateRead("last_prompt.txt", "(unknown)", cwd) || "(unknown)",
+					user_request: stateRead("last_prompt.txt", "(unknown)", r.state) || "(unknown)",
 					command: cmd,
 					cwd,
-					repo_root: projectDir(cwd),
+					repo_root: r.project,
 					script: scriptText(cmd, cwd) || "(no script file)",
 				};
 				let a: Record<string, Answer>;
 				try {
-					a = await ask("permission_gate", state, gateQuestions(), cwd);
+					a = await ask("permission_gate", state, gateQuestions(), { cfg: r.cfg, logs: r.logs });
 				} catch (e: any) {
 					// Jev 不可用时不做决定，放行到 pi 自己的流程
-					log({ hook: "permission_gate", mode: "shadow", command: cmd, error: String(e?.message ?? e) }, cwd);
+					log({ hook: "permission_gate", command: cmd, error: String(e?.message ?? e) }, r.logs, r.cfg);
 					return undefined;
 				}
 
 				const out = gateDecision(a, cfg);
-				log({ hook: "permission_gate", mode: enforce ? "enforce" : "shadow", command: cmd, action: out.kind, by: "jev" }, cwd);
+				log({ hook: "permission_gate", command: cmd, action: out.kind, by: "jev" }, r.logs, r.cfg);
 				if (!enforce) return undefined;
 
 				if (out.kind === "deny") return { block: true, reason: out.reason };
@@ -168,7 +159,6 @@ export function registerPermissionGate(pi: ExtensionAPI): void {
 				}
 				return { block: true, reason: out.reason };
 			},
-			ctx?.cwd,
 		);
 	});
 }

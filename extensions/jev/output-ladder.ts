@@ -7,7 +7,7 @@
  */
 import * as fs from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { type Answer, type ChoiceAnswer, type NoulAnswer, ask, guard, loadConfig, log, mode, stateRead, stateWrite } from "./jevlib.ts";
+import { type Answer, type ChoiceAnswer, type NoulAnswer, ask, guard, log, mode, resolve, stateRead, stateWrite } from "./jevlib.ts";
 
 export const LADDER: Record<string, string> = {
 	full: "Directly relevant to `user_request`; the agent needs these exact lines.",
@@ -75,16 +75,17 @@ export function registerOutputLadder(pi: ExtensionAPI): void {
 		return guard(
 			"output_ladder",
 			async () => {
-				const cfgAll = loadConfig(ctx?.cwd);
-				const cfg = cfgAll.ladder;
+				// 跟同一次 Bash 调用的 permission_gate 用同一个 hint 解析——这样 state 里的
+				// last_prompt.txt/outputs/ 落在同一个 `.pi/jev/` 下，recall 也指向那里。
+				const r = resolve(ctx?.cwd);
+				const cfg = r.cfg.ladder;
 				const stdout = fullStdout(event.content as any, event.details);
 				const lines = stdout.split("\n");
 				if (lines.length < cfg.min_lines) return undefined;
 
-				const cwd = ctx?.cwd;
 				const chunks = chunkLines(lines, cfg);
 				const state = {
-					user_request: String(stateRead("last_prompt.txt", "(unknown)", cwd) ?? "(unknown)"),
+					user_request: String(stateRead("last_prompt.txt", "(unknown)", r.state) ?? "(unknown)"),
 					command: String((event.input as any).command ?? ""),
 					chunks: Object.fromEntries(
 						chunks.map(([n, body]) => [`c${n}`, body.join("\n").slice(0, 3000)]),
@@ -109,31 +110,30 @@ export function registerOutputLadder(pi: ExtensionAPI): void {
 
 				let a: Record<string, Answer>;
 				try {
-					a = await ask("output_ladder", state, questions, cwd);
+					a = await ask("output_ladder", state, questions, { cfg: r.cfg, logs: r.logs });
 				} catch (e: any) {
-					log({ hook: "output_ladder", mode: "shadow", error: String(e?.message ?? e) }, cwd);
+					log({ hook: "output_ladder", error: String(e?.message ?? e) }, r.logs, r.cfg);
 					return undefined;
 				}
 				if ((a.has_error as NoulAnswer).noul >= 0.5) return undefined; // 有报错时整段原样保留
 
 				const key = event.toolCallId.replace(/\//g, "_");
-				const saved = stateWrite(`outputs/${key}.txt`, stdout, cwd);
+				const saved = stateWrite(`outputs/${key}.txt`, stdout, r.state);
 				const { text, keptChars, hidden } = buildLadderOutput(lines, chunks, a, cfg, saved);
 				log(
 					{
 						hook: "output_ladder",
-						mode: mode(cfgAll) === "enforce" ? "enforce" : "shadow",
 						lines: lines.length,
 						chars_before: stdout.length,
 						chars_after: keptChars,
 						hidden_ranges: hidden,
 					},
-					cwd,
+					r.logs,
+					r.cfg,
 				);
-				if (mode(cfgAll) !== "enforce") return undefined;
+				if (mode(r.cfg) !== "enforce") return undefined;
 				return { content: [{ type: "text", text }] };
 			},
-			ctx?.cwd,
 		);
 	});
 }
