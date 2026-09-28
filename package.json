@@ -1,6 +1,6 @@
 {
   "name": "jev-pi",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Jev for pi: TypeSafe System One judgments in the agent loop (permission gate, output ladder, conditional context, agent router)",
   "license": "MIT",
   "type": "module",
