@@ -33,5 +33,11 @@
     "tsx": "^4.20.0",
     "typescript": "~5.9.0",
     "typescript-eslint": "^8.46.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/weiping/jev-pi.git"
+  },
+  "bugs": "https://github.com/weiping/jev-pi/issues",
+  "homepage": "https://github.com/weiping/jev-pi#readme"
 }
