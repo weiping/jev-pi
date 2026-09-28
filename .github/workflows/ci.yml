@@ -24,7 +24,5 @@ jobs:
         run: npm test
         env:
           JEV_MOCK: "1"
-      - name: Package smoke (extension loads with mocked Jev)
-        run: |
-          npm install -g @earendil-works/pi-coding-agent
-          JEV_MOCK=1 pi -e ./ -p --no-tools "reply with exactly: ok" | grep -qx ok
+      - name: Assembly smoke (extension factory registers everything; no LLM needed)
+        run: npm run smoke
