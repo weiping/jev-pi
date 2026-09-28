@@ -90,8 +90,21 @@ npm test           # offline unit tests, mocked Jev, no API key (24 cases)
 npm run check      # all three
 ```
 
-CI runs the same lint + typecheck + test, plus a package smoke test
-(`JEV_MOCK=1 pi -e ./ -p ...`) on every push and tag.
+CI runs lint + typecheck + offline tests + an assembly smoke test on every push.
+
+## Release
+
+Bump `version` in `package.json`, commit, then tag and push — CD publishes to npm
+automatically after the full check suite passes:
+
+```bash
+npm version patch   # or minor / major
+git push --follow-tags
+```
+
+CD guards: the tag must equal `package.json` version, and that version must not already
+exist on npm. Requires the repo secret `NPM_TOKEN` (npm Automation token):
+`gh secret set NPM_TOKEN`. After publishing, users update with `pi update --extensions`.
 
 ## Differences from the original Claude Code plugin
 

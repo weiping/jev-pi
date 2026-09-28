@@ -1,0 +1,42 @@
+name: CD
+
+# Publishes to npm when a v* tag is pushed, after running the full check suite.
+# Required repo secret: NPM_TOKEN (npm Automation token, or Granular token with
+# publish rights and 2FA bypass). Set it with:
+#   gh secret set NPM_TOKEN
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: npm install --no-fund --no-audit
+
+      - name: Lint / Typecheck / Test / Smoke
+        run: npm run check
+
+      - name: Tag matches package.json version
+        run: test "$(npm pkg get version | tr -d '"')" = "${GITHUB_REF_NAME#v}"
+
+      - name: Version not already on npm
+        run: |
+          if npm view "jev-pi@${GITHUB_REF_NAME#v}" version >/dev/null 2>&1; then
+            echo "::error::jev-pi@${GITHUB_REF_NAME#v} is already published"; exit 1
+          fi
+
+      - name: Publish
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
