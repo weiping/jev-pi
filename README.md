@@ -83,18 +83,15 @@ without an API key.
 ## Develop and test
 
 ```bash
-npx -y tsx tests/test-extension.ts   # offline unit tests, mocked Jev (21 cases)
+npm install        # devDependencies include the pi package for types
+npm run lint       # eslint + typescript-eslint
+npm run typecheck  # tsc --strict, zero errors required
+npm test           # offline unit tests, mocked Jev, no API key (24 cases)
+npm run check      # all three
 ```
 
-Type checking (optional; links the pi package types locally):
-
-```bash
-mkdir -p node_modules/@earendil-works node_modules/@types
-ln -sfn "$(pi-root)/node_modules/@earendil-works/pi-coding-agent" node_modules/@earendil-works/pi-coding-agent  # adjust pi-root
-ln -sfn .../pi-coding-agent/node_modules/typebox node_modules/typebox
-ln -sfn .../pi-coding-agent/node_modules/@types/node node_modules/@types/node
-npx -y -p typescript@5.9 tsc -p tsconfig.json
-```
+CI runs the same lint + typecheck + test, plus a package smoke test
+(`JEV_MOCK=1 pi -e ./ -p ...`) on every push and tag.
 
 ## Differences from the original Claude Code plugin
 

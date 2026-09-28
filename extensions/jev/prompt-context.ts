@@ -186,7 +186,7 @@ export function registerPromptContext(pi: ExtensionAPI): void {
 		return undefined;
 	});
 
-	pi.on("before_agent_start", async (event, ctx) => {
+	pi.on("before_agent_start", async (event) => {
 		return guard("prompt_context", async () => {
 			const cfg = loadConfig().context; // 会话根配置决定 context 行为
 			const projects = collectProjects(jevProjects());

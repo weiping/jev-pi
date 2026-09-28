@@ -11,7 +11,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { EXT_ROOT, JEV_DIR, type Question, ask, guard, jevProjects, loadConfig, log, mode, project, stateWrite } from "./jevlib.ts";
+import { JEV_DIR, type Question, ask, guard, jevProjects, loadConfig, mode, project, stateWrite } from "./jevlib.ts";
 
 const INIT_INSTRUCTIONS = `Set up the Jev extension for this project. Work only inside \`.pi/jev/\` in the project root; do not touch application code.
 
@@ -149,7 +149,7 @@ export async function registerCommands(pi: ExtensionAPI): Promise<void> {
 
 	pi.registerCommand("jev:stats", {
 		description: "Show how the Jev extension has behaved (calls, latency, decisions, output savings)",
-		handler: async (_args, ctx) => {
+		handler: async (_args) => {
 			const text = statsText();
 			pi.sendUserMessage(
 				`Current Jev decision log summary:\n\n${text}\n\nSummarize this for me in a few sentences. ` +
@@ -213,7 +213,7 @@ export async function registerCommands(pi: ExtensionAPI): Promise<void> {
 					' "best": {"type":"choice","instructions":"...","criteria":{"a":"...","b":"..."}}}',
 			}),
 		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params, _signal, _onUpdate) {
 			return guard(
 				"jev_ask",
 				async () => {
