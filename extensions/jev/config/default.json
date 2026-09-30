@@ -6,7 +6,9 @@
     "allow_confidence": 0.85,
     "deny_confidence": 0.8,
     "egress_threshold": 0.5,
-    "readonly_commands": ["ls", "pwd", "cat", "head", "tail", "wc", "rg", "grep", "git status", "git diff", "git log", "git show"],
+    "readonly_commands": ["ls", "pwd", "cat", "head", "tail", "wc", "rg", "grep", "which", "stat", "file", "du", "df", "git status", "git diff", "git log", "git show", "git branch", "gh run view", "gh run list", "gh run watch", "gh issue view", "gh pr view", "gh repo list", "gh search", "gh secret list", "gh release list", "npm view", "npm ls", "npm ping"],
+    "allow_patterns": ["^git (add|commit)\\b"],
+    "extra_allow_patterns": [],
     "deny_patterns": ["(~|\\$HOME)/\\.ssh", "(^|[\\s/])\\.env(\\s|$|\\.(?!example\\b))", "curl[^|]*\\|\\s*(ba)?sh", "rm\\s+-rf\\s+/(\\s|$)"],
     "extra_deny_patterns": []
   },

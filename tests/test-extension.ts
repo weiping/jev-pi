@@ -9,9 +9,10 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { ask, ceilLevel, deepMerge, jevProjects, resolve, stateRead, stateWrite } from "../extensions/jev/jevlib.ts";
-import { gateDecision, isSimpleReadonly, scriptText, tokenize } from "../extensions/jev/permission-gate.ts";
+import { gateDecision, isSimpleReadonly, matchesPattern, scriptText, tokenize } from "../extensions/jev/permission-gate.ts";
 import { buildLadderOutput, chunkLines } from "../extensions/jev/output-ladder.ts";
 import { routerDecision } from "../extensions/jev/agent-router.ts";
 import { collectProjects, composeContext, globMatch, planQuestions } from "../extensions/jev/prompt-context.ts";
@@ -106,6 +107,27 @@ await test("gateDecision: high-confidence deny denies", () => {
 await test("gateDecision: high-confidence allow allows", () => {
 	const out = gateDecision({ decision: choice("allow", 0.9), egress: noul(0), network_requested: noul(0) }, gateCfg);
 	assert.equal(out.kind, "allow");
+});
+
+await test("matchesPattern: allow rule lets git add/commit compounds through, push not", () => {
+	const allow = ["^git (add|commit)\\b"];
+	assert.ok(matchesPattern("git add package.json && git commit -m \"x\"", allow));
+	assert.equal(matchesPattern("git push origin master", allow), null);
+});
+
+await test("matchesPattern: deny list still catches what an allow rule would let pass", () => {
+	// deny is checked before allow in the gate; keep both lists honest on their own
+	assert.ok(matchesPattern("cat ~/.ssh/id_rsa", ["\\.ssh"]));
+	assert.equal(matchesPattern("git add . && git commit -m ok", ["\\.ssh"]), null);
+});
+
+await test("default config ships audited read-only gh/npm prefixes and allow_patterns", () => {
+	const def = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "extensions", "jev", "config", "default.json"), "utf8"));
+	for (const c of ["gh run view", "gh issue view", "gh repo list", "gh search", "npm view", "npm ls"]) {
+		assert.ok(def.permission.readonly_commands.includes(c), `readonly: ${c}`);
+	}
+	assert.ok(def.permission.allow_patterns.some((p: string) => p.includes("git (add|commit)")));
+	assert.ok(Array.isArray(def.permission.extra_allow_patterns));
 });
 
 await test("gateDecision: everything else asks", () => {

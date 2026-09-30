@@ -32,6 +32,14 @@ export function tokenize(cmd: string): string[] {
 	return out;
 }
 
+/** First regex in `patterns` that matches `cmd`, or null. Shared by the deny and allow rule sets. */
+export function matchesPattern(cmd: string, patterns: string[]): string | null {
+	for (const pat of patterns) {
+		if (new RegExp(pat).test(cmd)) return pat;
+	}
+	return null;
+}
+
 export function isSimpleReadonly(cmd: string, readonlyCommands: string[]): boolean {
 	if (/[;&|<>`$()]/.test(cmd)) return false; // 复合命令、重定向、替换一律交给后面判断
 	return readonlyCommands.some((p) => cmd === p || cmd.startsWith(p + " "));
@@ -119,13 +127,18 @@ export function registerPermissionGate(pi: ExtensionAPI): void {
 				const enforce = mode(r.cfg) === "enforce";
 
 				// 1. 确定的规则，代码说了算
-				for (const pat of [...cfg.deny_patterns, ...(cfg.extra_deny_patterns ?? [])]) {
-					if (new RegExp(pat).test(cmd)) {
-						log({ hook: "permission_gate", command: cmd, action: "deny", by: "rule", rule: pat }, r.logs, r.cfg);
-						return enforce
-							? { block: true, reason: `Blocked by project rule: command matches \`${pat}\`.` }
-							: undefined;
-					}
+				// 1. Determined rules — code has the final say; deny always wins over allow
+				const denyHit = matchesPattern(cmd, [...cfg.deny_patterns, ...(cfg.extra_deny_patterns ?? [])]);
+				if (denyHit) {
+					log({ hook: "permission_gate", command: cmd, action: "deny", by: "rule", rule: denyHit }, r.logs, r.cfg);
+					return enforce
+						? { block: true, reason: `Blocked by project rule: command matches \`${denyHit}\`.` }
+						: undefined;
+				}
+				const allowHit = matchesPattern(cmd, [...(cfg.allow_patterns ?? []), ...(cfg.extra_allow_patterns ?? [])]);
+				if (allowHit) {
+					log({ hook: "permission_gate", command: cmd, action: "allow", by: "rule", rule: allowHit }, r.logs, r.cfg);
+					return undefined;
 				}
 				if (isSimpleReadonly(cmd, cfg.readonly_commands)) return undefined;
 

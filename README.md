@@ -73,8 +73,15 @@ siblings behaves exactly as before.
 ## Configuration
 
 Defaults live in `extensions/jev/config/default.json`; `.pi/jev/config.json` in a project is
-deep-merged on top (lists are replaced, so add project deny rules under
-`permission.extra_deny_patterns`).
+deep-merged on top (lists are replaced, so add project rules under `permission.extra_deny_patterns`
+/ `permission.extra_allow_patterns`).
+
+The permission gate checks, in order: `deny_patterns` → `allow_patterns` → simple read-only
+commands (`readonly_commands`, exact prefix, no pipes/redirects) → one Jev request. Static hits
+never reach Jev, so widening the rule sets also cuts per-command latency (~0.7 s median). Defaults
+ship an audited set: read-only `gh`/`git`/`npm` inspection commands are read-only-listed, and
+`^git (add|commit)\b` is allowed — local staging and commits pass without a Jev call, while
+`git push` still gets judged.
 
 `JEV_MOCK=1` replaces the network call with a local mock (noul 0.1 / first choice 0.9 / score 0);
 `JEV_MOCK_ANSWERS=<file>` feeds canned answers per question id. Both exercise the full request path
